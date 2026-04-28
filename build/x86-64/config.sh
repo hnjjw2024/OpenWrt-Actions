@@ -18,4 +18,7 @@ if [ -f "imagebuilder/.config" ]; then
     sed -i 's/CONFIG_VDI_IMAGES=y/# CONFIG_VDI_IMAGES is not set/' imagebuilder/.config
     sed -i 's/CONFIG_VMDK_IMAGES=y/# CONFIG_VMDK_IMAGES is not set/' imagebuilder/.config
     sed -i 's/CONFIG_VHDX_IMAGES=y/# CONFIG_VHDX_IMAGES is not set/' imagebuilder/.config
+    sed -i 's/CONFIG_TARGET_KERNEL_PARTSIZE=.*/CONFIG_TARGET_KERNEL_PARTSIZE=128/' imagebuilder/.config
+    sed -i 's/CONFIG_TARGET_ROOTFS_PARTSIZE=.*/CONFIG_TARGET_ROOTFS_PARTSIZE=896/' imagebuilder/.config
+    sed -i 's/CONFIG_TARGET_ROOTFS_AUTORESIZE=y/# CONFIG_TARGET_ROOTFS_AUTORESIZE is not set/' imagebuilder/.config
 fi
