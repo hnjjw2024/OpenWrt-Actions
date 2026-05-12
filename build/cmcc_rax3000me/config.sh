@@ -7,7 +7,7 @@ export targets="mediatek/filogic"
 # 设备CPU架构（用于下载预编译包）
 export arch="aarch64_cortex-a53"
 # OpenWrt版本，必须与官方版本一致
-export version="24.10.5"
+export version="24.10.6"
 # 后台管理IP地址
 export ip_address="172.16.2.1"
 # 网络掩码
