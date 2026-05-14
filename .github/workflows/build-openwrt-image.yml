@@ -113,6 +113,9 @@ jobs:
           echo "ip_address=$ip_address" >> $GITHUB_OUTPUT
           echo "netmask=$netmask" >> $GITHUB_OUTPUT
 
+          major_version=$(echo "$version" | cut -d. -f1,2)
+          echo "major_version=$major_version" >> $GITHUB_OUTPUT
+
           # Sanitize target (replace / with -)
           sanitized_target="${targets//\//-}"
           echo "sanitized_target=$sanitized_target" >> $GITHUB_OUTPUT
@@ -281,7 +284,8 @@ jobs:
               source "$CONFIG_FILE"
               ARCH="${arch:-unknown}"
               VERSION="${version:-unknown}"
-              RELEASE_TAG="${VERSION}-${ARCH}-packages"
+              MAJOR_VERSION=$(echo "$VERSION" | cut -d. -f1,2)
+              RELEASE_TAG="${MAJOR_VERSION}-${ARCH}-packages"
               echo "📥 Downloading packages from release: $RELEASE_TAG"
               gh release download "$RELEASE_TAG" \
                 --pattern "*.ipk" \
@@ -412,7 +416,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          RELEASE_TAG="${{ steps.device-config.outputs.version }}-${{ steps.device-config.outputs.profile }}"
+          RELEASE_TAG="${{ steps.device-config.outputs.major_version }}-${{ steps.device-config.outputs.profile }}"
           
           echo "🔍 Checking for existing release: $RELEASE_TAG"
           
@@ -438,8 +442,8 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: artifacts/${{ steps.device-config.outputs.profile }}/*
-          tag_name: ${{ steps.device-config.outputs.version }}-${{ steps.device-config.outputs.profile }}
-          name: 📤 ${{ steps.device-config.outputs.version }} ${{ matrix.device }}
+          tag_name: ${{ steps.device-config.outputs.major_version }}-${{ steps.device-config.outputs.profile }}
+          name: 📤 ${{ steps.device-config.outputs.major_version }} ${{ matrix.device }}
           body: |
             ### 📋 Build Information
 

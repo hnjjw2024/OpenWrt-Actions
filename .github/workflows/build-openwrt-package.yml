@@ -19,6 +19,7 @@ jobs:
     outputs:
       arches: ${{ steps.collect.outputs.arches }}
       versions: ${{ steps.collect.outputs.versions }}
+      arch-version-pairs: ${{ steps.collect.outputs.arch_version_pairs }}
       has-updates: ${{ steps.check-updates.outputs.has_updates }}
       hashes-b64: ${{ steps.check-updates.outputs.hashes_b64 }}
       updated-packages: ${{ steps.check-updates.outputs.updated_packages }}
@@ -30,44 +31,59 @@ jobs:
       - name: 🧩 Generate Matrix
         id: collect
         run: |
+          set -euo pipefail
+
           config_files=(build/*/config.sh)
           if [ ${#config_files[@]} -eq 0 ]; then
-            echo "No config.sh files found under build/." >&2
+            echo "::error::No config.sh files found under build/"
             exit 1
           fi
 
-          arches=()
-          versions=()
+          declare -A latest_versions
+          declare -A all_arches
 
           for file in "${config_files[@]}"; do
             arch="$(sed -n 's/^export arch="\([^"]*\)"/\1/p' "$file" | head -n1)"
             version="$(sed -n 's/^export version="\([^"]*\)"/\1/p' "$file" | head -n1)"
 
             if [ -z "$arch" ] || [ -z "$version" ]; then
-              echo "Missing arch/version in $file" >&2
+              echo "::error::Missing arch/version in $file"
               exit 1
             fi
 
-            arches+=("$arch")
-            versions+=("$version")
+            all_arches["$arch"]=1
+            major="$(echo "$version" | cut -d. -f1,2)"
+            current="${latest_versions[$major]:-}"
+            if [[ -z "$current" || "$version" > "$current" ]]; then
+              latest_versions["$major"]="$version"
+            fi
           done
 
-          mapfile -t arches_sorted < <(printf '%s\n' "${arches[@]}" | sort -u)
-          mapfile -t versions_sorted < <(printf '%s\n' "${versions[@]}" | sort -u)
+          mapfile -t arches_sorted < <(printf '%s\n' "${!all_arches[@]}" | sort)
+          mapfile -t versions_sorted < <(printf '%s\n' "${latest_versions[@]}" | sort -V)
 
           arches_json="$(printf '%s\n' "${arches_sorted[@]}" | jq -Rsc 'split("\n")[:-1]')"
           versions_json="$(printf '%s\n' "${versions_sorted[@]}" | jq -Rsc 'split("\n")[:-1]')"
 
+          pairs_json="$(jq -nc --argjson a "$arches_json" --argjson v "$versions_json" \
+            '[range($a|length) as $i | range($v|length) as $j | {arch:$a[$i],version:$v[$j]}]')"
+
           {
             echo "arches=$arches_json"
             echo "versions=$versions_json"
+            echo "arch_version_pairs=$pairs_json"
           } >> "$GITHUB_OUTPUT"
+
+          echo "::notice::Matrix arches: $arches_json"
+          echo "::notice::Matrix versions (latest per major): $versions_json"
 
       - name: 🔍 Check Extra Package Source Updates
         id: check-updates
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+
           HASH_TAG="extra-packages-hashes"
           HASH_ASSET="extra_packages_hashes.json"
           CURRENT_HASH_FILE="/tmp/current_${HASH_ASSET}"
@@ -76,7 +92,7 @@ jobs:
           DOWNLOAD_DIR="/tmp/hash_release"
 
           echo '{}' > "$CURRENT_HASH_FILE"
-          echo '[]' > "$UPDATED_ENTRIES_FILE"
+          echo '{}' > "$UPDATED_ENTRIES_FILE"
 
           mkdir -p "$DOWNLOAD_DIR"
           if gh release view "$HASH_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
@@ -92,45 +108,65 @@ jobs:
           jq -S . "$PREVIOUS_HASH_FILE" > "${PREVIOUS_HASH_FILE}.sorted"
           mv "${PREVIOUS_HASH_FILE}.sorted" "$PREVIOUS_HASH_FILE"
 
-          if [ -f "config/extra_packages.json" ]; then
-            while IFS= read -r entry; do
-              url=$(echo "$entry" | jq -r '.url // empty')
-              branch=$(echo "$entry" | jq -r '.branch // empty')
-              [ -n "$url" ] || continue
-              [ -n "$branch" ] || continue
+          PAIRS_JSON='${{ steps.collect.outputs.arch_version_pairs }}'
+          pair_count=$(echo "$PAIRS_JSON" | jq 'length')
+          has_updates=false
+          all_updated_packages=()
 
-              remote_hash=$(git ls-remote "$url" "refs/heads/$branch" | awk 'NR==1 {print $1}')
-              if [ -z "$remote_hash" ]; then
-                echo "::error::Failed to get remote hash for $url@$branch"
-                exit 1
-              fi
+          for (( idx=0; idx<pair_count; idx++ )); do
+            arch=$(echo "$PAIRS_JSON" | jq -r ".[$idx].arch")
+            version=$(echo "$PAIRS_JSON" | jq -r ".[$idx].version")
+            echo "::notice::🔎 Checking arch=$arch version=$version"
 
-              key="${url}@${branch}"
-              tmp_file="${CURRENT_HASH_FILE}.tmp"
-              jq --arg k "$key" --arg v "$remote_hash" '. + {($k): $v}' "$CURRENT_HASH_FILE" > "$tmp_file"
-              mv "$tmp_file" "$CURRENT_HASH_FILE"
-              echo "📌 $key -> $remote_hash"
+            if [ -f "config/extra_packages.json" ]; then
+              while IFS= read -r entry; do
+                url=$(echo "$entry" | jq -r '.url // empty')
+                branch=$(echo "$entry" | jq -r '.branch // empty')
+                [ -n "$url" ] || continue
+                [ -n "$branch" ] || continue
 
-              previous_hash=$(jq -r --arg k "$key" '.[$k] // ""' "$PREVIOUS_HASH_FILE")
-              if [ "$remote_hash" != "$previous_hash" ]; then
-                tmp_file="${UPDATED_ENTRIES_FILE}.tmp"
-                jq --argjson e "$entry" '. + [$e]' "$UPDATED_ENTRIES_FILE" > "$tmp_file"
-                mv "$tmp_file" "$UPDATED_ENTRIES_FILE"
-              fi
-            done < <(jq -c '.[]' config/extra_packages.json)
-          else
-            echo "::warning::config/extra_packages.json not found, using empty hash map"
-          fi
+                remote_hash=$(git ls-remote "$url" "refs/heads/$branch" | awk 'NR==1 {print $1}')
+                if [ -z "$remote_hash" ]; then
+                  echo "::error::Failed to get remote hash for $url@$branch"
+                  exit 1
+                fi
+
+                key="${url}@${branch}"
+                tmp_file="${CURRENT_HASH_FILE}.tmp"
+                jq --arg a "$arch" --arg v "$version" --arg k "$key" --arg h "$remote_hash" \
+                  '.[$a] //= {} | .[$a][$v] //= {} | .[$a][$v][$k] = $h' \
+                  "$CURRENT_HASH_FILE" > "$tmp_file"
+                mv "$tmp_file" "$CURRENT_HASH_FILE"
+
+                previous_hash=$(jq -r --arg a "$arch" --arg v "$version" --arg k "$key" \
+                  '.[$a][$v][$k] // empty' "$PREVIOUS_HASH_FILE")
+
+                if [ "$remote_hash" != "$previous_hash" ]; then
+                  has_updates=true
+                  tmp_file="${UPDATED_ENTRIES_FILE}.tmp"
+                  jq --arg a "$arch" --arg v "$version" --argjson e "$entry" \
+                    '.[$a] //= {} | .[$a][$v] //= [] | .[$a][$v] += [$e]' \
+                    "$UPDATED_ENTRIES_FILE" > "$tmp_file"
+                  mv "$tmp_file" "$UPDATED_ENTRIES_FILE"
+
+                  while IFS= read -r pkg; do
+                    all_updated_packages+=("$pkg")
+                  done < <(echo "$entry" | jq -r '.packages[]?')
+                fi
+
+                echo "📌 $arch/$version: $key -> $remote_hash"
+              done < <(jq -c '.[]' config/extra_packages.json)
+            fi
+          done
 
           jq -S . "$CURRENT_HASH_FILE" > "${CURRENT_HASH_FILE}.sorted"
           mv "${CURRENT_HASH_FILE}.sorted" "$CURRENT_HASH_FILE"
 
-          has_updates=false
-          if ! cmp -s "$CURRENT_HASH_FILE" "$PREVIOUS_HASH_FILE"; then
+          if [ "$has_updates" = "false" ] && ! cmp -s "$CURRENT_HASH_FILE" "$PREVIOUS_HASH_FILE"; then
             has_updates=true
           fi
 
-          updated_packages=$(jq -r '.[].packages[]?' "$UPDATED_ENTRIES_FILE" | sort -u | xargs)
+          updated_packages=$(printf '%s\n' "${all_updated_packages[@]}" 2>/dev/null | sort -u | xargs || true)
           hashes_b64=$(base64 -w 0 "$CURRENT_HASH_FILE")
           updated_entries_b64=$(base64 -w 0 "$UPDATED_ENTRIES_FILE")
 
@@ -169,10 +205,19 @@ jobs:
           build_date=$(TZ=$TZ date +'%Y-%m-%d %H:%M:%S %Z')
           echo "date=$build_date" >> $GITHUB_OUTPUT
 
+      - name: 🔧 Extract Major Version
+        id: version-info
+        run: |
+          MAJOR_VERSION=$(echo "${{ matrix.version }}" | cut -d. -f1,2)
+          echo "major_version=$MAJOR_VERSION" >> $GITHUB_OUTPUT
+          echo "::notice::Version: ${{ matrix.version }} -> Major: $MAJOR_VERSION"
+
       - name: 📦 Clone Extra Packages
         env:
           UPDATED_PACKAGES: ${{ needs.generate-matrix.outputs.updated-packages }}
           UPDATED_ENTRIES_B64: ${{ needs.generate-matrix.outputs.updated-entries-b64 }}
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ matrix.version }}
         run: |
           if [ -z "$UPDATED_ENTRIES_B64" ]; then
             echo "EXTRA_PACKAGES=" >> $GITHUB_ENV
@@ -183,10 +228,13 @@ jobs:
           UPDATED_ENTRIES_FILE="/tmp/updated_entries.json"
           echo "$UPDATED_ENTRIES_B64" | base64 -d > "$UPDATED_ENTRIES_FILE"
 
-          entry_count=$(jq 'length' "$UPDATED_ENTRIES_FILE")
+          CURRENT_ENTRIES=$(jq -c --arg a "$ARCH" --arg v "$VERSION" \
+            '.[$a][$v] // []' "$UPDATED_ENTRIES_FILE")
+          entry_count=$(echo "$CURRENT_ENTRIES" | jq 'length')
+
           if [ "$entry_count" -eq 0 ]; then
             echo "EXTRA_PACKAGES=" >> $GITHUB_ENV
-            echo "::notice::ℹ️ No updated plugin entries"
+            echo "::notice::ℹ️ No updated entries for $ARCH/$VERSION"
             exit 0
           fi
 
@@ -194,7 +242,7 @@ jobs:
           echo "::notice::📦 Updated packages to build: $UPDATED_PACKAGES"
 
           mkdir -p packages
-          jq -c '.[]' "$UPDATED_ENTRIES_FILE" | while IFS= read -r entry; do
+          echo "$CURRENT_ENTRIES" | jq -c '.[]' | while IFS= read -r entry; do
             url=$(echo "$entry" | jq -r '.url // empty')
             branch=$(echo "$entry" | jq -r '.branch // empty')
             script=$(echo "$entry" | jq -r '.scripts // empty')
@@ -242,7 +290,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          RELEASE_TAG="${{ matrix.version }}-${{ matrix.arch }}"
+          RELEASE_TAG="${{ steps.version-info.outputs.major_version }}-${{ matrix.arch }}"
           PKG_DIR="bin/packages/${{ matrix.arch }}/packages_ci"
           
           echo "📋 Checking for old remote assets in release: $RELEASE_TAG"
@@ -277,8 +325,8 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: bin/packages/${{ matrix.arch }}/packages_ci/*
-          tag_name: ${{ matrix.version }}-${{ matrix.arch }}-packages
-          name: 📦 ${{ matrix.version }} ${{ matrix.arch }} Packages
+          tag_name: ${{ steps.version-info.outputs.major_version }}-${{ matrix.arch }}-packages
+          name: 📦 ${{ steps.version-info.outputs.major_version }} ${{ matrix.arch }} Packages
           body: |
             ### 📋 Build Information
 
