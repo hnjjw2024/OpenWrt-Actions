@@ -60,7 +60,7 @@ jobs:
           done
 
           mapfile -t arches_sorted < <(printf '%s\n' "${!all_arches[@]}" | sort)
-          mapfile -t versions_sorted < <(printf '%s\n' "${latest_versions[@]}" | sort -V)
+          mapfile -t versions_sorted < <(printf '%s\n' "${!latest_versions[@]}" | sort -V)
 
           arches_json="$(printf '%s\n' "${arches_sorted[@]}" | jq -Rsc 'split("\n")[:-1]')"
           versions_json="$(printf '%s\n' "${versions_sorted[@]}" | jq -Rsc 'split("\n")[:-1]')"
@@ -205,12 +205,7 @@ jobs:
           build_date=$(TZ=$TZ date +'%Y-%m-%d %H:%M:%S %Z')
           echo "date=$build_date" >> $GITHUB_OUTPUT
 
-      - name: 🔧 Extract Major Version
-        id: version-info
-        run: |
-          MAJOR_VERSION=$(echo "${{ matrix.version }}" | cut -d. -f1,2)
-          echo "major_version=$MAJOR_VERSION" >> $GITHUB_OUTPUT
-          echo "::notice::Version: ${{ matrix.version }} -> Major: $MAJOR_VERSION"
+      # Removed: Extract Major Version (matrix.version is already the major version)
 
       - name: 📦 Clone Extra Packages
         env:
@@ -266,7 +261,7 @@ jobs:
       - name: 🔨 Build OpenWrt Packages
         uses: immortalwrt/gh-action-sdk@master
         env:
-          ARCH: ${{ matrix.arch }}-${{ matrix.version }}
+          ARCH: ${{ matrix.arch }}-openwrt-${{ matrix.version }}
           FEEDNAME: packages_ci
           PACKAGES: ${{ needs.generate-matrix.outputs.updated-packages }}
           NO_REFRESH_CHECK: 1
@@ -290,7 +285,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          RELEASE_TAG="${{ steps.version-info.outputs.major_version }}-${{ matrix.arch }}"
+          RELEASE_TAG="${{ matrix.version }}-${{ matrix.arch }}"
           PKG_DIR="bin/packages/${{ matrix.arch }}/packages_ci"
           
           echo "📋 Checking for old remote assets in release: $RELEASE_TAG"
@@ -325,8 +320,8 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: bin/packages/${{ matrix.arch }}/packages_ci/*
-          tag_name: ${{ steps.version-info.outputs.major_version }}-${{ matrix.arch }}-packages
-          name: 📦 ${{ steps.version-info.outputs.major_version }} ${{ matrix.arch }} Packages
+          tag_name: ${{ matrix.version }}-${{ matrix.arch }}-packages
+          name: 📦 ${{ matrix.version }} ${{ matrix.arch }} Packages
           body: |
             ### 📋 Build Information
 
