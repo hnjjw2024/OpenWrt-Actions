@@ -210,36 +210,55 @@ jobs:
         if: steps.cache-restore.outputs.cache-hit != 'true'
         run: |
           ARCHIVE="imagebuilder_tmp/imagebuilder.tar.zst"
-
+      
           if [ ! -f "$ARCHIVE" ]; then
-            echo "::error::Archive not found"
+            echo "::error::压缩文件不存在"
             exit 1
           fi
-
+      
           mkdir -p extract_tmp
           cd extract_tmp
-
+      
           if file "$OLDPWD/$ARCHIVE" | grep -q "Zstandard"; then
-            echo " Extracting Zstandard archive"
+            echo "🔧 解压 Zstandard 格式"
             tar -I zstd -xf "$OLDPWD/$ARCHIVE"
           elif file "$OLDPWD/$ARCHIVE" | grep -q "XZ"; then
-            echo "🔧 Extracting XZ archive"
+            echo "🔧 解压 XZ 格式"
             tar -xJf "$OLDPWD/$ARCHIVE"
           else
-            echo "⚠️ Unknown format, trying generic extraction"
+            echo "⚠️ 未知格式，尝试通用解压"
             tar -xf "$OLDPWD/$ARCHIVE"
           fi
-
-          mv immortalwrt-imagebuilder-* ../imagebuilder
-          cd ..
-          rm -rf extract_tmp
-
-          if [ ! -f "imagebuilder/Makefile" ]; then
-            echo "::error::ImageBuilder extraction failed"
+      
+          # 使用 find 查找解压后的目录
+          EXTRACTED_DIR=$(find . -maxdepth 1 -type d -name "immortalwrt-imagebuilder-*" | head -1)
+          if [ -z "$EXTRACTED_DIR" ]; then
+            echo "::error::未找到解压后的 ImageBuilder 目录"
+            echo "extract_tmp 目录内容："
+            ls -la
             exit 1
           fi
-
-          echo "✅ ImageBuilder extracted successfully"
+      
+          mv "$EXTRACTED_DIR" ../imagebuilder
+          cd ..
+          rm -rf extract_tmp
+      
+          # 验证关键文件
+          if [ ! -f "imagebuilder/Makefile" ]; then
+            echo "::error::ImageBuilder 解压失败 - Makefile 不存在"
+            echo "ImageBuilder 目录内容："
+            ls -la imagebuilder/ || true
+            exit 1
+          fi
+      
+          if [ ! -f "imagebuilder/feeds.conf.default" ]; then
+            echo "::error::ImageBuilder 解压失败 - feeds.conf.default 不存在"
+            echo "ImageBuilder 目录内容："
+            ls -la imagebuilder/ || true
+            exit 1
+          fi
+      
+          echo "✅ ImageBuilder 解压完成"
 
       - name: 📝 Prepare Packages
         id: packages
