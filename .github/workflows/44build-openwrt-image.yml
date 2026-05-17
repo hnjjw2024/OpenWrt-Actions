@@ -145,13 +145,14 @@ jobs:
           echo "ib_hash=$IB_HASH" >> $GITHUB_OUTPUT
           echo "✅ ImageBuilder sha256: $IB_HASH"
 
-      - name: 💾 Restore ImageBuilder Cache
+       - name: 💾 Restore ImageBuilder Cache
         id: cache-restore
         uses: actions/cache@v5
         with:
           path: imagebuilder
-          key: imagebuilder-${{ steps.device-config.outputs.version }}-${{ steps.device-config.outputs.sanitized_target }}-${{ steps.imagebuilder-sha256.outputs.ib_hash }}
-
+          key: imagebuilder-${{ steps.device-config.outputs.version }}-${{ steps.device-config.outputs.sanitized_target }}-${{ steps.imagebuilder-sha256.outputs.ib_hash }}-v2
+          restore-keys: |
+            imagebuilder-${{ steps.device-config.outputs.version }}-${{ steps.device-config.outputs.sanitized_target }}-
       - name: 📦 Download ImageBuilder with axel
         id: download
         if: steps.cache-restore.outputs.cache-hit != 'true'
@@ -356,22 +357,45 @@ jobs:
           echo "📦 Packages: $PACKAGES"
           echo "🔄 Using $(nproc) parallel jobs"
       
-          # 验证 feeds 配置文件是否存在
+          # 验证核心文件存在
+          echo "🔍 验证 ImageBuilder 结构..."
+          if [ ! -f "Makefile" ]; then
+            echo "::error::Makefile 不存在于 imagebuilder 目录"
+            echo "目录内容："
+            ls -la
+            exit 1
+          fi
+      
+          # 详细诊断 feeds 配置文件
+          echo "📋 检查 feeds 配置文件..."
           if [ ! -f "feeds.conf.default" ] && [ ! -f "feeds.conf" ]; then
             echo "::error::ImageBuilder 中未找到 feeds.conf 配置文件"
+            echo "::group::ImageBuilder 目录详细内容"
+            ls -la
+            echo "搜索所有 feeds.conf 相关文件："
+            find . -name "*feeds.conf*" 2>/dev/null || echo "未找到任何 feeds.conf 文件"
+            echo "::endgroup::"
             exit 1
           fi
       
           # 如果 feeds.conf 不存在，从默认配置复制
           if [ ! -f "feeds.conf" ]; then
+            echo "📋 从 feeds.conf.default 创建 feeds.conf"
             cp feeds.conf.default feeds.conf
+            if [ $? -ne 0 ]; then
+              echo "::error::无法复制 feeds.conf.default"
+              exit 1
+            fi
           fi
       
           # 只清理 feeds 临时文件，不删除整个目录
-          rm -rf feeds/tmp/
+          rm -rf feeds/tmp/ 2>/dev/null || true
           
           # 更新 feeds
-          ./scripts/feeds update -a
+          echo "📥 更新 feeds..."
+          ./scripts/feeds update -a || {
+            echo "::warning::Feed 更新出现问题，继续执行..."
+          }
           ./scripts/feeds install -a || true
       
           # 执行构建
@@ -391,7 +415,6 @@ jobs:
           fi
       
           echo "✅ 构建完成"
-
       - name: 🗜️ Archive Artifacts
         run: |
           PROFILE="${{ steps.device-config.outputs.profile }}"
