@@ -1,4 +1,4 @@
-name: Build OpenWrt Image
+name: Image
 
 on:
   workflow_dispatch:
