@@ -330,22 +330,36 @@ jobs:
         run: |
           PROFILE="${{ steps.device-config.outputs.profile }}"
           PACKAGES="${{ steps.packages.outputs.packages }}"
-
+      
           cd imagebuilder
-
+      
           echo "🚀 Building with PROFILE=$PROFILE"
           echo "📦 Packages: $PACKAGES"
           echo "🔄 Using $(nproc) parallel jobs"
-
-          if ! make -j$(nproc) image PROFILE="$PROFILE" PACKAGES="$PACKAGES" FILES="files/" V=s; then
+      
+          # Clean any potentially corrupt feeds
+          rm -rf feeds/
+          
+          # Update feeds before building
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a || true
+      
+          # Attempt build with verbose output
+          if ! make -j$(nproc) image PROFILE="$PROFILE" PACKAGES="$PACKAGES" FILES="files/" V=s 2>&1 | tee build.log; then
             echo "::error::Build failed"
+            echo "::group::Build Log"
+            cat build.log || true
+            echo "::endgroup::"
+            
+            # Extract more detailed error info
             if [ -d "logs" ]; then
-              echo "::error::Build errors:"
-              grep -i 'error\|failed' logs/*.log | head -20 || true
+              echo "::group::Detailed Build Errors"
+              find logs -name "*.log" -exec sh -c 'echo "=== {} ===" && tail -50 "{}"' \; || true
+              echo "::endgroup::"
             fi
             exit 1
           fi
-
+      
           echo "✅ Build completed successfully"
 
       - name: 🗜️ Archive Artifacts
