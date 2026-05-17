@@ -337,30 +337,41 @@ jobs:
           echo "📦 Packages: $PACKAGES"
           echo "🔄 Using $(nproc) parallel jobs"
       
-          # Clean any potentially corrupt feeds
-          rm -rf feeds/
+          # 验证 feeds 配置文件是否存在
+          if [ ! -f "feeds.conf.default" ] && [ ! -f "feeds.conf" ]; then
+            echo "::error::ImageBuilder 中未找到 feeds.conf 配置文件"
+            exit 1
+          fi
+      
+          # 如果 feeds.conf 不存在，从默认配置复制
+          if [ ! -f "feeds.conf" ]; then
+            cp feeds.conf.default feeds.conf
+          fi
+      
+          # 只清理 feeds 临时文件，不删除整个目录
+          rm -rf feeds/tmp/
           
-          # Update feeds before building
+          # 更新 feeds
           ./scripts/feeds update -a
           ./scripts/feeds install -a || true
       
-          # Attempt build with verbose output
+          # 执行构建
           if ! make -j$(nproc) image PROFILE="$PROFILE" PACKAGES="$PACKAGES" FILES="files/" V=s 2>&1 | tee build.log; then
-            echo "::error::Build failed"
+            echo "::error::构建失败"
             echo "::group::Build Log"
             cat build.log || true
             echo "::endgroup::"
             
-            # Extract more detailed error info
+            # 提取详细错误信息
             if [ -d "logs" ]; then
-              echo "::group::Detailed Build Errors"
+              echo "::group::详细构建错误"
               find logs -name "*.log" -exec sh -c 'echo "=== {} ===" && tail -50 "{}"' \; || true
               echo "::endgroup::"
             fi
             exit 1
           fi
       
-          echo "✅ Build completed successfully"
+          echo "✅ 构建完成"
 
       - name: 🗜️ Archive Artifacts
         run: |
