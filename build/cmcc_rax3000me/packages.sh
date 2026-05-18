@@ -168,14 +168,3 @@ PACKAGES="$PACKAGES luci-i18n-usb-printer-zh-cn"
 # PACKAGES="$PACKAGES luci-i18n-xinetd-zh-cn"
 # PACKAGES="$PACKAGES luci-i18n-xlnetacc-zh-cn"
 # PACKAGES="$PACKAGES luci-i18n-zerotier-zh-cn"
-#!/bin/bash
-# RAX3000Me 硬件加速包 - 仅使用官方 ImmortalWrt 24.10 确认存在的包
-# 硬件流量卸载核心
-PACKAGES="$PACKAGES kmod-nf-flow"
-PACKAGES="$PACKAGES kmod-ipt-offload"
-PACKAGES="$PACKAGES iptables-mod-offload"
-# LuCI 加速控制界面
-PACKAGES="$PACKAGES luci-app-offloading"
-PACKAGES="$PACKAGES luci-i18n-offloading-zh-cn"
-# QoS
-PACKAGES="$PACKAGES kmod-sched-cake"
