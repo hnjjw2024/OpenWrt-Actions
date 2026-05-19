@@ -405,6 +405,42 @@ jobs:
           fi
           echo "Build completed successfully"
 
+      - name: 📄 Extract Official Configuration & Manifests
+        run: |
+          PROFILE="${{ steps.device-config.outputs.profile }}"
+          TARGETS="${{ steps.device-config.outputs.targets }}"
+          VERSION="${{ steps.device-config.outputs.version }}"
+          ARTIFACT_DIR="artifacts/${PROFILE}"
+          mkdir -p "$ARTIFACT_DIR"
+
+          # 1. 下载官方 config.buildinfo（内核与包完整编译配置）
+          CONFIG_URL="https://downloads.immortalwrt.org/releases/${VERSION}/targets/${TARGETS}/config.buildinfo"
+          echo "📥 正在下载官方配置文件: $CONFIG_URL"
+          if curl -fsSL "$CONFIG_URL" -o "$ARTIFACT_DIR/official-config.buildinfo"; then
+            echo "✅ 成功下载 config.buildinfo"
+            # 提取关键配置摘要（内核版本、核心驱动、默认包）
+            echo "📊 配置摘要:"
+            grep -E "^(CONFIG_KERNEL_VERSION=|CONFIG_TARGET_|CONFIG_PACKAGE_kmod-|CONFIG_PACKAGE_luci-)" "$ARTIFACT_DIR/official-config.buildinfo" | head -30
+          else
+            echo "::warning::️ config.buildinfo 不存在，已跳过"
+          fi
+
+          # 2. 保存 profiles.json（官方默认包列表与设备元数据）
+          if [ -f imagebuilder/bin/targets/${TARGETS}/profiles.json ]; then
+            cp imagebuilder/bin/targets/${TARGETS}/profiles.json "$ARTIFACT_DIR/profiles.json"
+            echo "✅ 已保存 profiles.json"
+          fi
+
+          # 3. 保存编译后的包清单 manifest（实际打入固件的包列表）
+          cd imagebuilder
+          if [ -f bin/targets/${TARGETS}/packages/manifest ]; then
+            cp bin/targets/${TARGETS}/packages/manifest ../"$ARTIFACT_DIR/compiled-packages.manifest"
+            echo "✅ 已保存 compiled-packages.manifest"
+          fi
+          cd ..
+
+          echo "📁 所有配置文件已归档至: $ARTIFACT_DIR/"
+          ls -lh "$ARTIFACT_DIR/"
       - name: Archive Artifacts
         run: |
           PROFILE="${{ steps.device-config.outputs.profile }}"
