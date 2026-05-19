@@ -298,12 +298,12 @@ jobs:
                     id: packages
                     env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          DEVICE="${{ matrix.device }}"
-          DEFAULT_PKG="config/default_packages.sh"
-          DEVICE_PKG="build/${DEVICE}/packages.sh"
-          DEVICE_EXTRA_PKG="build/${DEVICE}/extra_packages.sh"
-          CONFIG_FILE="build/${DEVICE}/config.sh"
+          run: |
+            DEVICE="${{ matrix.device }}"
+            DEFAULT_PKG="config/default_packages.sh"
+            DEVICE_PKG="build/${DEVICE}/packages.sh"
+            DEVICE_EXTRA_PKG="build/${DEVICE}/extra_packages.sh"
+            CONFIG_FILE="build/${DEVICE}/config.sh"
           
           PACKAGES=""
           
