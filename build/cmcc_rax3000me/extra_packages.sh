@@ -12,6 +12,6 @@
 # PACKAGES="$PACKAGES luci-i18n-mosdns-zh-cn"
 
 # Easytier - P2P组网工具
-PACKAGES="$PACKAGES easytier"
-PACKAGES="$PACKAGES luci-app-easytier"
-PACKAGES="$PACKAGES luci-i18n-easytier-zh-cn"
+# PACKAGES="$PACKAGES easytier"
+# PACKAGES="$PACKAGES luci-app-easytier"
+# PACKAGES="$PACKAGES luci-i18n-easytier-zh-cn"
