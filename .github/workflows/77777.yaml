@@ -283,20 +283,20 @@ jobs:
             else
               echo "Creating default feeds.conf.default"
               cat > imagebuilder/feeds.conf.default << 'FEEDS_EOF'
-src-git packages https://github.com/openwrt/packages.git^openwrt-24.10
-src-git luci https://github.com/openwrt/luci.git^openwrt-24.10
-src-git routing https://git.openwrt.org/feed/routing.git^openwrt-24.10
-src-git telephony https://git.openwrt.org/feed/telephony.git^openwrt-24.10
-FEEDS_EOF
-              echo "Created default feeds.conf.default"
-            fi
-          fi
-          
-          echo "ImageBuilder extraction completed successfully"
-
-      - name: Prepare Packages
-        id: packages
-        env:
+            src-git packages https://github.com/openwrt/packages.git^openwrt-24.10
+            src-git luci https://github.com/openwrt/luci.git^openwrt-24.10
+            src-git routing https://git.openwrt.org/feed/routing.git^openwrt-24.10
+            src-git telephony https://git.openwrt.org/feed/telephony.git^openwrt-24.10
+            FEEDS_EOF
+                          echo "Created default feeds.conf.default"
+                        fi
+                      fi
+                      
+                      echo "ImageBuilder extraction completed successfully"
+            
+                  - name: Prepare Packages
+                    id: packages
+                    env:
           GH_TOKEN: ${{ github.token }}
         run: |
           DEVICE="${{ matrix.device }}"
