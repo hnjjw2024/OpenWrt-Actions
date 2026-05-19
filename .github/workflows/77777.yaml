@@ -5,7 +5,7 @@ on:
     inputs:
       device:
         type: choice
-        description: "选择型号"
+        description: "Select device model"
         required: true
         default: all
         options:
@@ -17,13 +17,13 @@ on:
       
       version:
         type: string
-        description: "ImmortalWrt版本(可选,留空使用config.sh默认值)"
+        description: "ImmortalWrt version (optional, leave empty to use config.sh default)"
         required: false
         default: ""
       
       ip_address:
         type: string
-        description: "后台IP地址(可选)"
+        description: "Admin IP address (optional)"
         required: false
 
 permissions:
@@ -227,18 +227,15 @@ jobs:
           mkdir -p extract_tmp
           cd extract_tmp
           
-          echo "Detecting compression format..."
+          echo "Extracting archive..."
           if file "$OLDPWD/$ARCHIVE" | grep -q "Zstandard"; then
             echo "Extracting Zstandard format"
-            tar -I zstd -xf "$OLDPWD/$ARCHIVE" || {
-              echo "tar -I zstd failed, trying zstd + tar"
-              zstd -d "$OLDPWD/$ARCHIVE" -c | tar -xf -
-            }
+            zstd -d "$OLDPWD/$ARCHIVE" -c | tar -xf -
           elif file "$OLDPWD/$ARCHIVE" | grep -q "XZ"; then
             echo "Extracting XZ format"
             tar -xJf "$OLDPWD/$ARCHIVE"
           else
-            echo "Unknown format, trying generic extraction"
+            echo "Trying generic extraction"
             tar -xf "$OLDPWD/$ARCHIVE"
           fi
           
@@ -246,17 +243,11 @@ jobs:
           EXTRACTED_DIR=$(find . -maxdepth 1 -type d -name "immortalwrt-imagebuilder-*" | head -1)
           
           if [ -z "$EXTRACTED_DIR" ]; then
-            EXTRACTED_DIR=$(find . -maxdepth 1 -type d -name "*imagebuilder*" | head -1)
-          fi
-          
-          if [ -z "$EXTRACTED_DIR" ]; then
             EXTRACTED_DIR=$(find . -maxdepth 1 -mindepth 1 -type d | head -1)
-            echo "Warning: Using first directory found: $EXTRACTED_DIR"
           fi
           
           if [ -z "$EXTRACTED_DIR" ]; then
             echo "::error::No directory found after extraction"
-            echo "extract_tmp contents:"
             ls -la
             exit 1
           fi
@@ -270,40 +261,37 @@ jobs:
           ls -la imagebuilder/
           
           if [ ! -f "imagebuilder/Makefile" ]; then
-            echo "::error::Makefile not found in imagebuilder"
+            echo "::error::Makefile not found"
             exit 1
           fi
           
+          echo "Checking feeds configuration..."
           if [ ! -f "imagebuilder/feeds.conf.default" ]; then
-            echo "Warning: feeds.conf.default not found, creating..."
-            
+            echo "feeds.conf.default not found, checking for feeds.conf..."
             if [ -f "imagebuilder/feeds.conf" ]; then
               echo "Copying feeds.conf to feeds.conf.default"
               cp imagebuilder/feeds.conf imagebuilder/feeds.conf.default
             else
               echo "Creating default feeds.conf.default"
-              cat > imagebuilder/feeds.conf.default << 'FEEDS_EOF'
-            src-git packages https://github.com/openwrt/packages.git^openwrt-24.10
-            src-git luci https://github.com/openwrt/luci.git^openwrt-24.10
-            src-git routing https://git.openwrt.org/feed/routing.git^openwrt-24.10
-            src-git telephony https://git.openwrt.org/feed/telephony.git^openwrt-24.10
-            FEEDS_EOF
-                          echo "Created default feeds.conf.default"
-                        fi
-                      fi
-                      
-                      echo "ImageBuilder extraction completed successfully"
-            
-                  - name: Prepare Packages
-                    id: packages
-                    env:
+              echo "src-git packages https://github.com/openwrt/packages.git^openwrt-24.10" > imagebuilder/feeds.conf.default
+              echo "src-git luci https://github.com/openwrt/luci.git^openwrt-24.10" >> imagebuilder/feeds.conf.default
+              echo "src-git routing https://git.openwrt.org/feed/routing.git^openwrt-24.10" >> imagebuilder/feeds.conf.default
+              echo "src-git telephony https://git.openwrt.org/feed/telephony.git^openwrt-24.10" >> imagebuilder/feeds.conf.default
+            fi
+          fi
+          
+          echo "ImageBuilder extraction completed successfully"
+
+      - name: Prepare Packages
+        id: packages
+        env:
           GH_TOKEN: ${{ github.token }}
-          run: |
-            DEVICE="${{ matrix.device }}"
-            DEFAULT_PKG="config/default_packages.sh"
-            DEVICE_PKG="build/${DEVICE}/packages.sh"
-            DEVICE_EXTRA_PKG="build/${DEVICE}/extra_packages.sh"
-            CONFIG_FILE="build/${DEVICE}/config.sh"
+        run: |
+          DEVICE="${{ matrix.device }}"
+          DEFAULT_PKG="config/default_packages.sh"
+          DEVICE_PKG="build/${DEVICE}/packages.sh"
+          DEVICE_EXTRA_PKG="build/${DEVICE}/extra_packages.sh"
+          CONFIG_FILE="build/${DEVICE}/config.sh"
           
           PACKAGES=""
           
@@ -330,15 +318,12 @@ jobs:
               gh release download "$RELEASE_TAG" \
                 --pattern "*.ipk" \
                 --dir "imagebuilder/packages/" \
-                --repo "${{ github.repository }}" || {
-                echo "::warning::Could not download packages from release $RELEASE_TAG"
-              }
+                --repo "${{ github.repository }}" || true
               
               PKG_COUNT=$(find "imagebuilder/packages/" -name "*.ipk" 2>/dev/null | wc -l)
               if [ "$PKG_COUNT" -gt 0 ]; then
                 echo "Downloaded $PKG_COUNT packages"
                 find "imagebuilder/packages/" -name "*.ipk" > /tmp/ipk_list.txt
-                echo "Recorded ipk files for cleanup"
                 source "$DEVICE_EXTRA_PKG"
               else
                 echo "::warning::No packages downloaded"
@@ -389,13 +374,11 @@ jobs:
           echo "Packages: $PACKAGES"
           echo "Using $(nproc) parallel jobs"
           
-          echo "Verifying ImageBuilder structure..."
           if [ ! -f "Makefile" ]; then
             echo "::error::Makefile not found"
             exit 1
           fi
           
-          echo "Checking feeds configuration..."
           if [ ! -f "feeds.conf" ]; then
             if [ -f "feeds.conf.default" ]; then
               echo "Creating feeds.conf from feeds.conf.default"
@@ -409,9 +392,7 @@ jobs:
           rm -rf feeds/tmp/ 2>/dev/null || true
           
           echo "Updating feeds..."
-          ./scripts/feeds update -a || {
-            echo "::warning::Feed update had issues, continuing..."
-          }
+          ./scripts/feeds update -a || true
           ./scripts/feeds install -a || true
           
           echo "Starting build..."
@@ -420,11 +401,6 @@ jobs:
             echo "::group::Build Log"
             cat build.log || true
             echo "::endgroup::"
-            if [ -d "logs" ]; then
-              echo "::group::Detailed build errors"
-              find logs -name "*.log" -exec sh -c 'echo "=== {} ===" && tail -50 "{}"' \; || true
-              echo "::endgroup::"
-            fi
             exit 1
           fi
           echo "Build completed successfully"
@@ -459,12 +435,10 @@ jobs:
           if [ -f /tmp/ipk_list.txt ]; then
             echo "Removing downloaded ipk files..."
             xargs rm -f < /tmp/ipk_list.txt
-            echo "Cleaned downloaded ipk files"
           fi
           if [ -d imagebuilder/bin ]; then
             echo "Removing built firmware files..."
             find imagebuilder/bin -type f \( -name "*.bin" -o -name "*.img" -o -name "*.itb" -o -name "*.fip" -o -name "*.gz" -o -name "*.trx" -o -name "*.manifest" -o -name "sha256sums" \) -exec rm -f {} +
-            echo "Cleaned firmware files"
           fi
 
       - name: Delete Old Release and Tag
@@ -477,7 +451,6 @@ jobs:
           if gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" &>/dev/null; then
             echo "Deleting old release: $RELEASE_TAG"
             gh release delete "$RELEASE_TAG" --repo "${{ github.repository }}" --yes
-            echo "Release deleted"
           else
             echo "No existing release found"
           fi
@@ -485,8 +458,7 @@ jobs:
           if git rev-parse "$RELEASE_TAG" &>/dev/null; then
             echo "Deleting old tag: $RELEASE_TAG"
             git tag -d "$RELEASE_TAG"
-            git push --delete origin "$RELEASE_TAG" 2>/dev/null || echo "Could not delete remote tag"
-            echo "Tag deleted"
+            git push --delete origin "$RELEASE_TAG" 2>/dev/null || true
           fi
 
       - name: Upload to Release
