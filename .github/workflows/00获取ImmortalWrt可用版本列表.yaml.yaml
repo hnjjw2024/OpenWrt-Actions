@@ -1,0 +1,125 @@
+# 此工作流用于自动获取ImmortalWrt所有可用版本号
+# 使用方法：在GitHub Actions标签页点击"Run workflow"运行此工作流
+# 运行后会打印所有可用版本，然后去主工作流中选择对应版本
+
+name: 获取ImmortalWrt可用版本列表
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        type: choice
+        description: "选择版本源"
+        required: true
+        default: immortalwrt
+        options:
+          - immortalwrt
+          - openwrt
+
+jobs:
+  fetch-versions:
+    name: 获取可用版本
+    runs-on: ubuntu-latest
+    steps:
+      - name: 获取 ImmortalWrt 版本列表
+        if: github.event.inputs.source == 'immortalwrt'
+        run: |
+          echo "## 正在从 GitHub Tags 获取 ImmortalWrt 版本..."
+          echo ""
+          
+          # 方法1: 从 GitHub API 获取 tags
+          TAGS_URL="https://api.github.com/repos/immortalwrt/immortalwrt/tags?per_page=100"
+          echo "请求URL: $TAGS_URL"
+          
+          RESPONSE=$(curl -s -w "\n%{http_code}" "$TAGS_URL")
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          
+          if [ "$HTTP_CODE" = "200" ] && [ -n "$BODY" ]; then
+            # 提取tag名称并过滤出release版本
+            VERSIONS=$(echo "$BODY" | jq -r '.[].name' | grep -E '^(openwrt-|lede-)' | sort -V | uniq)
+            
+            if [ -z "$VERSIONS" ]; then
+              # 如果上面的过滤没结果，获取所有tags
+              VERSIONS=$(echo "$BODY" | jq -r '.[].name' | sort -V | uniq)
+            fi
+            
+            echo "### 从 GitHub Tags 获取到的版本:"
+            echo ""
+            echo "\`\`\`"
+            echo "$VERSIONS"
+            echo "\`\`\`"
+            echo ""
+            echo "共获取到 $(echo "$VERSIONS" | grep -c .) 个版本"
+            
+            # 同时尝试从downloads网站获取
+            echo ""
+            echo "## 正在从 downloads.immortalwrt.org 获取发布版本..."
+            RELEASES_URL="https://downloads.immortalwrt.org/releases/"
+            
+            # 尝试获取releases目录列表
+            if curl -fsSL --connect-timeout 10 --max-time 30 "$RELEASES_URL" -o /tmp/releases.html 2>/dev/null; then
+              RELEASE_VERSIONS=$(grep -oP 'releases/\K[0-9]+\.[0-9]+[^/"<]*' /tmp/releases.html 2>/dev/null | sort -Vu | tail -20)
+              if [ -n "$RELEASE_VERSIONS" ]; then
+                echo "### 从 downloads.immortalwrt.org 获取到的发布版本:"
+                echo ""
+                echo "\`\`\`"
+                echo "$RELEASE_VERSIONS"
+                echo "\`\`\`"
+              else
+                echo "### downloads.immortalwrt.org 未返回版本列表(可能是目录列表格式不支持)"
+              fi
+            else
+              echo "### 无法访问 downloads.immortalwrt.org，仅显示GitHub Tags"
+            fi
+            
+            echo ""
+            echo "## 使用说明:"
+            echo "1. 以上列出了所有可用的ImmortalWrt版本号"
+            echo "2. 去 **可选择编译的分支** 工作流点击 'Run workflow'"
+            echo "3. 在 Version 输入框中输入你想使用的版本号(例如: openwrt-24.10)"
+            echo "4. 也可以留空使用 config.sh 中的默认版本"
+          else
+            echo "::error::无法获取版本列表, HTTP状态码: $HTTP_CODE"
+            echo "响应内容: $BODY"
+            exit 1
+          fi
+
+      - name: 获取 OpenWrt 版本列表
+        if: github.event.inputs.source == 'openwrt'
+        run: |
+          echo "## 正在从 GitHub Tags 获取 OpenWrt 版本..."
+          echo ""
+          
+          TAGS_URL="https://api.github.com/repos/openwrt/openwrt/tags?per_page=100"
+          echo "请求URL: $TAGS_URL"
+          
+          RESPONSE=$(curl -s -w "\n%{http_code}" "$TAGS_URL")
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          
+          if [ "$HTTP_CODE" = "200" ] && [ -n "$BODY" ]; then
+            VERSIONS=$(echo "$BODY" | jq -r '.[].name' | grep -E '^openwrt-' | sort -V | uniq)
+            
+            if [ -z "$VERSIONS" ]; then
+              VERSIONS=$(echo "$BODY" | jq -r '.[].name' | sort -V | uniq)
+            fi
+            
+            echo "### 从 GitHub Tags 获取到的版本:"
+            echo ""
+            echo "\`\`\`"
+            echo "$VERSIONS"
+            echo "\`\`\`"
+            echo ""
+            echo "共获取到 $(echo "$VERSIONS" | grep -c .) 个版本"
+            
+            echo ""
+            echo "## 使用说明:"
+            echo "1. 以上列出了所有可用的OpenWrt版本号"
+            echo "2. 去 **可选择编译的分支** 工作流点击 'Run workflow'"
+            echo "3. 在 Version 输入框中输入你想使用的版本号(例如: openwrt-24.10)"
+            echo "4. 也可以留空使用 config.sh 中的默认版本"
+          else
+            echo "::error::无法获取版本列表, HTTP状态码: $HTTP_CODE"
+            exit 1
+          fi
