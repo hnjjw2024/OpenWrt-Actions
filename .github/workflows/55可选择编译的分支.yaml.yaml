@@ -1,0 +1,579 @@
+name: 24and25 Build OpenWrt Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        type: choice
+        description: "Select device model"
+        required: true
+        default: all
+        options:
+          - all
+          - cmcc_rax3000me
+          - qihoo_360t7
+          - x86-64
+          - xiaomi_mi-router-ax3000t-ubootmod
+      
+      version:
+        type: string
+        description: "ImmortalWrt version (optional, leave empty to use config.sh default)"
+        required: false
+        default: ""
+      
+      ip_address:
+        type: string
+        description: "Admin IP address (optional)"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  generate-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Build Matrix
+        id: set-matrix
+        run: |
+          SELECTED_DEVICE="${{ github.event.inputs.device }}"
+          if [ "$SELECTED_DEVICE" = "all" ]; then
+            mapfile -t DEVICES < <(find build -mindepth 1 -maxdepth 1 -type d -exec test -f '{}/config.sh' \; -printf '%f\n' | sort)
+          else
+            DEVICES=("$SELECTED_DEVICE")
+          fi
+          
+          if [ "${#DEVICES[@]}" -eq 0 ]; then
+            echo "::error::No build devices found under build/"
+            exit 1
+          fi
+          
+          MATRIX_JSON=$(printf '%s\n' "${DEVICES[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0)) | map({device: .}) | {include: .}')
+          echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
+          echo "::notice::Build matrix: $MATRIX_JSON"
+
+  call-build-package:
+    uses: ./.github/workflows/build-openwrt-package.yml
+    secrets: inherit
+    permissions:
+      contents: write
+
+  build:
+    needs:
+      - generate-matrix
+      - call-build-package
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Get Build Date (CST)
+        id: get-date
+        run: |
+          TZ='Asia/Shanghai'
+          build_date=$(TZ=$TZ date +'%Y-%m-%d %H:%M:%S %Z')
+          echo "date=$build_date" >> $GITHUB_OUTPUT
+
+      - name: Setup Build Environment
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential libncurses5-dev zlib1g-dev gawk git gettext libssl-dev xsltproc wget unzip python3 jq zstd axel coreutils openssl rhash curl dnsutils
+          sudo apt-get install -y libncursesw5-dev genisoimage xsltproc rsync dnsmasq stunnel4 net-tools resolvconf python3-pip python3-venv iptables-persistent qemu-utils
+
+      - name: Read Device Configuration
+        id: device-config
+        run: |
+          DEVICE="${{ matrix.device }}"
+          CONFIG_FILE="build/${DEVICE}/config.sh"
+          INPUT_IP_ADDRESS="${{ github.event.inputs.ip_address }}"
+          INPUT_VERSION="${{ github.event.inputs.version }}"
+          
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "::error::Config file not found: $CONFIG_FILE"
+            exit 1
+          fi
+          
+          source "$CONFIG_FILE"
+          
+          if [ -n "$INPUT_VERSION" ]; then
+            echo "::notice::Using custom version: $INPUT_VERSION"
+            version="$INPUT_VERSION"
+          else
+            echo "::notice::Using default version: $version"
+          fi
+          
+          if [ -n "$INPUT_IP_ADDRESS" ]; then
+            ip_address="$INPUT_IP_ADDRESS"
+          fi
+          
+          echo "hostname=$hostname" >> $GITHUB_OUTPUT
+          echo "profile=$profile" >> $GITHUB_OUTPUT
+          echo "targets=$targets" >> $GITHUB_OUTPUT
+          echo "arch=$arch" >> $GITHUB_OUTPUT
+          echo "version=$version" >> $GITHUB_OUTPUT
+          echo "ip_address=$ip_address" >> $GITHUB_OUTPUT
+          echo "netmask=$netmask" >> $GITHUB_OUTPUT
+          
+          major_version=$(echo "$version" | cut -d. -f1,2)
+          echo "major_version=$major_version" >> $GITHUB_OUTPUT
+          
+          sanitized_target="${targets////-}"
+          echo "sanitized_target=$sanitized_target" >> $GITHUB_OUTPUT
+          
+          echo "::notice::Device: $profile, Target: $targets, Version: $version"
+
+      - name: Download ImageBuilder sha256sum
+        id: imagebuilder-sha256
+        run: |
+          VERSION="${{ steps.device-config.outputs.version }}"
+          TARGETS="${{ steps.device-config.outputs.targets }}"
+          BASE_URL="https://downloads.immortalwrt.org/releases/${VERSION}/targets/${TARGETS}"
+          
+          echo "Downloading sha256sums from $BASE_URL"
+          if curl -fsSL "${BASE_URL}/sha256sums" -o /tmp/sha256sums; then
+            echo "Downloaded sha256sums"
+          else
+            echo "::error::Failed to download sha256sums from $BASE_URL"
+            exit 1
+          fi
+          
+          IB_PATTERN="imagebuilder.*(tar\.zst|tar\.xz)"
+          IB_HASH=$(grep -E "$IB_PATTERN" /tmp/sha256sums | head -n1 | awk '{print $1}')
+          if [ -z "$IB_HASH" ]; then
+            echo "::error::Failed to extract imagebuilder hash"
+            exit 1
+          fi
+          echo "ib_hash=$IB_HASH" >> $GITHUB_OUTPUT
+          echo "ImageBuilder sha256: $IB_HASH"
+
+      - name: Restore ImageBuilder Cache
+        id: cache-restore
+        uses: actions/cache@v5
+        with:
+          path: imagebuilder
+          key: imagebuilder-${{ steps.device-config.outputs.version }}-${{ steps.device-config.outputs.sanitized_target }}-${{ steps.imagebuilder-sha256.outputs.ib_hash }}-v3
+          restore-keys: |
+            imagebuilder-${{ steps.device-config.outputs.version }}-${{ steps.device-config.outputs.sanitized_target }}-
+
+      - name: Download ImageBuilder with axel
+        id: download
+        if: steps.cache-restore.outputs.cache-hit != 'true'
+        run: |
+          VERSION="${{ steps.device-config.outputs.version }}"
+          DEVICE_TARGETS="${{ steps.device-config.outputs.targets }}"
+          SANITIZED_TARGET="${{ steps.device-config.outputs.sanitized_target }}"
+          BASE_URL="https://downloads.immortalwrt.org/releases/${VERSION}/targets/${DEVICE_TARGETS}"
+          
+          URLS=(
+            "${BASE_URL}/immortalwrt-imagebuilder-${VERSION}-${SANITIZED_TARGET}.Linux-x86_64.tar.zst"
+            "${BASE_URL}/immortalwrt-imagebuilder-${SANITIZED_TARGET}.Linux-x86_64.tar.zst"
+            "${BASE_URL}/immortalwrt-imagebuilder-${VERSION}-${SANITIZED_TARGET}.Linux-x86_64.tar.xz"
+            "${BASE_URL}/immortalwrt-imagebuilder-${SANITIZED_TARGET}.Linux-x86_64.tar.xz"
+          )
+          
+          mkdir -p imagebuilder_tmp
+          FOUND=0
+          
+          for URL in "${URLS[@]}"; do
+            echo "Testing: $URL"
+            if curl -Ls --connect-timeout 10 --max-time 30 --head "$URL" -w "%{http_code}" -o /dev/null | grep -q "200"; then
+              echo "Found valid ImageBuilder at: $URL"
+              echo "Downloading with axel (64 threads)..."
+              if axel -n 64 -o imagebuilder_tmp/imagebuilder.tar.zst "$URL"; then
+                FILESIZE=$(stat -c%s "imagebuilder_tmp/imagebuilder.tar.zst")
+                if [ "$FILESIZE" -gt 1000000 ]; then
+                  echo "Download completed, file size: $FILESIZE bytes"
+                  FOUND=1
+                  break
+                else
+                  echo "File too small, trying next URL"
+                fi
+              else
+                echo "axel download failed, trying wget"
+                if wget -O imagebuilder_tmp/imagebuilder.tar.zst "$URL"; then
+                  FILESIZE=$(stat -c%s "imagebuilder_tmp/imagebuilder.tar.zst")
+                  if [ "$FILESIZE" -gt 1000000 ]; then
+                    echo "Wget download completed successfully"
+                    FOUND=1
+                    break
+                  fi
+                fi
+              fi
+            fi
+          done
+          
+          if [ "$FOUND" -eq 0 ]; then
+            echo "::error::ImageBuilder not found at any URL"
+            exit 1
+          fi
+
+      - name: Extract ImageBuilder
+        if: steps.cache-restore.outputs.cache-hit != 'true'
+        run: |
+          ARCHIVE="imagebuilder_tmp/imagebuilder.tar.zst"
+          if [ ! -f "$ARCHIVE" ]; then
+            echo "::error::Archive file does not exist"
+            exit 1
+          fi
+          
+          mkdir -p extract_tmp
+          cd extract_tmp
+          
+          echo "Extracting archive..."
+          if file "$OLDPWD/$ARCHIVE" | grep -q "Zstandard"; then
+            echo "Extracting Zstandard format"
+            zstd -d "$OLDPWD/$ARCHIVE" -c | tar -xf -
+          elif file "$OLDPWD/$ARCHIVE" | grep -q "XZ"; then
+            echo "Extracting XZ format"
+            tar -xJf "$OLDPWD/$ARCHIVE"
+          else
+            echo "Trying generic extraction"
+            tar -xf "$OLDPWD/$ARCHIVE"
+          fi
+          
+          echo "Finding ImageBuilder directory..."
+          EXTRACTED_DIR=$(find . -maxdepth 1 -type d -name "immortalwrt-imagebuilder-*" | head -1)
+          
+          if [ -z "$EXTRACTED_DIR" ]; then
+            EXTRACTED_DIR=$(find . -maxdepth 1 -mindepth 1 -type d | head -1)
+          fi
+          
+          if [ -z "$EXTRACTED_DIR" ]; then
+            echo "::error::No directory found after extraction"
+            ls -la
+            exit 1
+          fi
+          
+          echo "Found directory: $EXTRACTED_DIR"
+          mv "$EXTRACTED_DIR" ../imagebuilder
+          cd ..
+          rm -rf extract_tmp
+          
+          echo "Verifying ImageBuilder structure..."
+          ls -la imagebuilder/
+          
+          if [ ! -f "imagebuilder/Makefile" ]; then
+            echo "::error::Makefile not found"
+            exit 1
+          fi
+          
+          echo "Checking feeds configuration..."
+          if [ ! -f "imagebuilder/feeds.conf.default" ]; then
+            echo "feeds.conf.default not found, checking for feeds.conf..."
+            if [ -f "imagebuilder/feeds.conf" ]; then
+              echo "Copying feeds.conf to feeds.conf.default"
+              cp imagebuilder/feeds.conf imagebuilder/feeds.conf.default
+            else
+              echo "Creating default feeds.conf.default"
+              echo "src-git packages https://github.com/openwrt/packages.git^openwrt-24.10" > imagebuilder/feeds.conf.default
+              echo "src-git luci https://github.com/openwrt/luci.git^openwrt-24.10" >> imagebuilder/feeds.conf.default
+              echo "src-git routing https://git.openwrt.org/feed/routing.git^openwrt-24.10" >> imagebuilder/feeds.conf.default
+              echo "src-git telephony https://git.openwrt.org/feed/telephony.git^openwrt-24.10" >> imagebuilder/feeds.conf.default
+            fi
+          fi
+          
+          echo "ImageBuilder extraction completed successfully"
+
+      - name: Clone luci-app-mesh (随固件编译)
+        run: |
+          echo "=== Cloning luci-app-mesh repository ==="
+          if [ -d "imagebuilder/package/luci-app-mesh" ]; then
+            echo "luci-app-mesh directory already exists, skipping clone"
+          else
+            git clone https://gitee.com/dffxy/luci-app-mesh.git imagebuilder/package/luci-app-mesh || {
+              echo "::warning::Failed to clone from Gitee, trying GitHub mirror..."
+              git clone https://github.com/dffxy/luci-app-mesh.git imagebuilder/package/luci-app-mesh || {
+                echo "::warning::Failed to clone luci-app-mesh from any source, skipping"
+                echo "luci_app_mesh_clone_failed=true" >> $GITHUB_ENV
+              }
+            }
+            if [ -d "imagebuilder/package/luci-app-mesh" ]; then
+              echo "Cloned luci-app-mesh successfully"
+              ls -la imagebuilder/package/luci-app-mesh/
+            else
+              echo "::warning::luci-app-mesh clone failed, will skip this package"
+              echo "luci_app_mesh_clone_failed=true" >> $GITHUB_ENV
+            fi
+          fi
+      - name: Prepare Packages
+        id: packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DEVICE="${{ matrix.device }}"
+          DEFAULT_PKG="config/default_packages.sh"
+          DEVICE_PKG="build/${DEVICE}/packages.sh"
+          DEVICE_EXTRA_PKG="build/${DEVICE}/extra_packages.sh"
+          CONFIG_FILE="build/${DEVICE}/config.sh"
+          
+          PACKAGES=""
+          
+          if [ -f "$DEFAULT_PKG" ]; then
+            echo "Loading default packages from $DEFAULT_PKG"
+            source "$DEFAULT_PKG"
+          fi
+          
+          if [ -f "$DEVICE_PKG" ]; then
+            echo "Loading device-specific packages from $DEVICE_PKG"
+            source "$DEVICE_PKG"
+          fi
+          
+          if [ -f "$DEVICE_EXTRA_PKG" ]; then
+            if [ -f "$CONFIG_FILE" ]; then
+              echo "Downloading precompiled packages from release"
+              source "$CONFIG_FILE"
+              ARCH="${arch:-unknown}"
+              VERSION="${version:-unknown}"
+              MAJOR_VERSION=$(echo "$VERSION" | cut -d. -f1,2)
+              RELEASE_TAG="${MAJOR_VERSION}-${ARCH}-packages"
+              
+              echo "Downloading packages from release: $RELEASE_TAG"
+              gh release download "$RELEASE_TAG" \
+                --pattern "*.ipk" \
+                --dir "imagebuilder/packages/" \
+                --repo "${{ github.repository }}" || true
+              
+              PKG_COUNT=$(find "imagebuilder/packages/" -name "*.ipk" 2>/dev/null | wc -l)
+              if [ "$PKG_COUNT" -gt 0 ]; then
+                echo "Downloaded $PKG_COUNT packages"
+                find "imagebuilder/packages/" -name "*.ipk" > /tmp/ipk_list.txt
+                source "$DEVICE_EXTRA_PKG"
+              else
+                echo "::warning::No packages downloaded"
+              fi
+            fi
+          fi
+          
+          echo "packages=$PACKAGES" >> $GITHUB_OUTPUT
+          echo "Total packages: $PACKAGES"
+
+      - name: Copy Custom Files
+        run: |
+          DEVICE="${{ matrix.device }}"
+          DEVICE_CUSTOM_SH="build/${DEVICE}/99-custom.sh"
+          TARGET_CUSTOM_SH="imagebuilder/files/etc/uci-defaults/99-custom.sh"
+          HOSTNAME="${{ steps.device-config.outputs.hostname }}"
+          IP_ADDRESS="${{ steps.device-config.outputs.ip_address }}"
+          NETMASK="${{ steps.device-config.outputs.netmask }}"
+          
+          if [ ! -f "$DEVICE_CUSTOM_SH" ]; then
+            echo "::error::Device custom script not found: $DEVICE_CUSTOM_SH"
+            exit 1
+          fi
+          
+          mkdir -p imagebuilder/files/etc/uci-defaults
+          cp "$DEVICE_CUSTOM_SH" "$TARGET_CUSTOM_SH"
+          
+          if [ -n "$HOSTNAME" ]; then
+            sed -i "s|^hostname=.*|hostname=\"${HOSTNAME}\"|" "$TARGET_CUSTOM_SH"
+          fi
+          if [ -n "$IP_ADDRESS" ]; then
+            sed -i "s|^ip_address=.*|ip_address=\"${IP_ADDRESS}\"|" "$TARGET_CUSTOM_SH"
+          fi
+          if [ -n "$NETMASK" ]; then
+            sed -i "s|^netmask=.*|netmask=\"${NETMASK}\"|" "$TARGET_CUSTOM_SH"
+          fi
+          
+          chmod +x "$TARGET_CUSTOM_SH"
+          echo "Copied and patched 99-custom.sh successfully"
+
+      - name: Build Firmware
+        run: |
+          PROFILE="${{ steps.device-config.outputs.profile }}"
+          PACKAGES="${{ steps.packages.outputs.packages }}"
+          
+          cd imagebuilder
+          echo "Building with PROFILE=$PROFILE"
+          echo "Packages: $PACKAGES"
+          echo "Using $(nproc) parallel jobs"
+          
+          if [ ! -f "Makefile" ]; then
+            echo "::error::Makefile not found"
+            exit 1
+          fi
+          
+          if [ ! -f "feeds.conf" ]; then
+            if [ -f "feeds.conf.default" ]; then
+              echo "Creating feeds.conf from feeds.conf.default"
+              cp feeds.conf.default feeds.conf
+            else
+              echo "::error::feeds.conf and feeds.conf.default not found"
+              exit 1
+            fi
+          fi
+          
+          rm -rf feeds/tmp/ 2>/dev/null || true
+          
+          echo "Updating feeds..."
+          ./scripts/feeds update -a || true
+          ./scripts/feeds install -a || true
+          
+          # 启用 luci-app-mesh 随固件编译（依赖自动拉齐）
+          if [ -d "package/luci-app-mesh" ] && [ "${luci_app_mesh_clone_failed}" != "true" ]; then
+            echo "CONFIG_PACKAGE_luci-app-mesh=m" >> .config
+            make defconfig >/dev/null 2>&1 || true
+            echo "luci-app-mesh enabled in config"
+          else
+            echo "::warning::luci-app-mesh not available, skipping"
+          fi
+          echo "Starting build..."
+          if ! make -j$(nproc) image PROFILE="$PROFILE" PACKAGES="$PACKAGES" FILES="files/" V=s 2>&1 | tee build.log; then
+            echo "::error::Build failed"
+            echo "::group::Build Log"
+            cat build.log || true
+            echo "::endgroup::"
+            exit 1
+          fi
+          echo "Build completed successfully"
+
+      - name: Copy Compiled luci-app-mesh IPK to Artifacts
+        run: |
+          PROFILE="${{ steps.device-config.outputs.profile }}"
+          ARTIFACT_DIR="artifacts/${PROFILE}"
+          mkdir -p "$ARTIFACT_DIR"
+          
+          # 先列出 bin/packages 目录结构以便排查
+          echo "=== Listing package output directories ==="
+          find imagebuilder/bin/packages -type f -name "*.ipk" 2>/dev/null | head -20 || echo "No ipk files found in bin/packages"
+          find imagebuilder/bin -type f -name "luci-app-mesh*" 2>/dev/null | head -10 || echo "No luci-app-mesh files found in bin/"
+          
+          # 使用 -print0 和 readarray 安全处理文件名（兼容带空格或特殊字符的文件名）
+          # 将 find 的结果存入数组，避免变量展开导致的错误
+          readarray -d '' -t IPK_ARRAY < <(find imagebuilder/bin -type f -name "luci-app-mesh*.ipk" -print0 2>/dev/null)
+          
+          if [ ${#IPK_ARRAY[@]} -gt 0 ]; then
+            echo "Found compiled luci-app-mesh ipk files:"
+            printf '%s\n' "${IPK_ARRAY[@]}"
+            for ipk in "${IPK_ARRAY[@]}"; do
+              # 使用 -f 强制复制，并在失败时不报错（|| true 阻止 -e 退出）
+              cp -f "$ipk" "$ARTIFACT_DIR/" || true
+              echo "Copied: $(basename "$ipk") -> $ARTIFACT_DIR/"
+            done
+          else
+            # 找不到文件时，输出警告但不中断流水线
+            echo "::warning::No luci-app-mesh ipk found in build output"
+            echo "=== Directory listing for debugging ==="
+            ls -la imagebuilder/bin/ 2>/dev/null || echo "imagebuilder/bin/ not found"
+            ls -la imagebuilder/bin/packages/ 2>/dev/null || echo "imagebuilder/bin/packages/ not found"
+          fi
+
+      - name: 📄 Extract Official Configuration & Manifests
+        run: |
+          PROFILE="${{ steps.device-config.outputs.profile }}"
+          TARGETS="${{ steps.device-config.outputs.targets }}"
+          VERSION="${{ steps.device-config.outputs.version }}"
+          ARTIFACT_DIR="artifacts/${PROFILE}"
+          mkdir -p "$ARTIFACT_DIR"
+
+          # 1. 下载官方 config.buildinfo（内核与包完整编译配置）
+          CONFIG_URL="https://downloads.immortalwrt.org/releases/${VERSION}/targets/${TARGETS}/config.buildinfo"
+          echo "📥 正在下载官方配置文件: $CONFIG_URL"
+          if curl -fsSL "$CONFIG_URL" -o "$ARTIFACT_DIR/official-config.buildinfo"; then
+            echo "✅ 成功下载 config.buildinfo"
+            # 提取关键配置摘要（内核版本、核心驱动、默认包）
+            echo "📊 配置摘要:"
+            grep -E "^(CONFIG_KERNEL_VERSION=|CONFIG_TARGET_|CONFIG_PACKAGE_kmod-|CONFIG_PACKAGE_luci-)" "$ARTIFACT_DIR/official-config.buildinfo" | head -30
+          else
+            echo "::warning::️ config.buildinfo 不存在，已跳过"
+          fi
+
+          # 2. 保存 profiles.json（官方默认包列表与设备元数据）
+          if [ -f imagebuilder/bin/targets/${TARGETS}/profiles.json ]; then
+            cp imagebuilder/bin/targets/${TARGETS}/profiles.json "$ARTIFACT_DIR/profiles.json"
+            echo "✅ 已保存 profiles.json"
+          fi
+
+          # 3. 保存编译后的包清单 manifest（实际打入固件的包列表）
+          cd imagebuilder
+          if [ -f bin/targets/${TARGETS}/packages/manifest ]; then
+            cp bin/targets/${TARGETS}/packages/manifest ../"$ARTIFACT_DIR/compiled-packages.manifest"
+            echo "✅ 已保存 compiled-packages.manifest"
+          fi
+          cd ..
+
+          echo "📁 所有配置文件已归档至: $ARTIFACT_DIR/"
+          ls -lh "$ARTIFACT_DIR/"
+      - name: Archive Artifacts
+        run: |
+          PROFILE="${{ steps.device-config.outputs.profile }}"
+          ARTIFACT_DIR="artifacts/${PROFILE}"
+          ARCH_SEGMENT="${{ steps.device-config.outputs.sanitized_target }}-"
+          
+          mkdir -p "$ARTIFACT_DIR"
+          
+          mapfile -t FIRMWARE_FILES < <(find imagebuilder/bin/targets -type f \( -name "*.bin" -o -name "*.img" -o -name "*.itb" -o -name "*.fip" -o -name "*.gz" -o -name "*.trx" -o -name "*.manifest" -o -name "sha256sums" \))
+          
+          if [ "${#FIRMWARE_FILES[@]}" -eq 0 ]; then
+            echo "::error::No firmware artifacts found"
+            exit 1
+          fi
+          
+          for file in "${FIRMWARE_FILES[@]}"; do
+            filename="$(basename "$file")"
+            cleaned_name="${filename#immortalwrt-}"
+            cleaned_name="${cleaned_name//${ARCH_SEGMENT}/}"
+            cp "$file" "$ARTIFACT_DIR/$cleaned_name"
+            echo "$filename -> $cleaned_name"
+          done
+          echo "Archived ${#FIRMWARE_FILES[@]} files to $ARTIFACT_DIR"
+
+      - name: Clean Downloaded IPK and Firmware Before Cache
+        if: always()
+        run: |
+          if [ -f /tmp/ipk_list.txt ]; then
+            echo "Removing downloaded ipk files..."
+            xargs rm -f < /tmp/ipk_list.txt
+          fi
+          if [ -d imagebuilder/bin ]; then
+            echo "Removing built firmware files..."
+            find imagebuilder/bin -type f \( -name "*.bin" -o -name "*.img" -o -name "*.itb" -o -name "*.fip" -o -name "*.gz" -o -name "*.trx" -o -name "*.manifest" -o -name "sha256sums" \) -exec rm -f {} +
+          fi
+
+      - name: Delete Old Release and Tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RELEASE_TAG="${{ steps.device-config.outputs.major_version }}-${{ steps.device-config.outputs.profile }}"
+          echo "Checking for existing release: $RELEASE_TAG"
+          
+          if gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" &>/dev/null; then
+            echo "Deleting old release: $RELEASE_TAG"
+            gh release delete "$RELEASE_TAG" --repo "${{ github.repository }}" --yes
+          else
+            echo "No existing release found"
+          fi
+          
+          if git rev-parse "$RELEASE_TAG" &>/dev/null; then
+            echo "Deleting old tag: $RELEASE_TAG"
+            git tag -d "$RELEASE_TAG"
+            git push --delete origin "$RELEASE_TAG" 2>/dev/null || true
+          fi
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: artifacts/${{ steps.device-config.outputs.profile }}/*
+          tag_name: ${{ steps.device-config.outputs.major_version }}-${{ steps.device-config.outputs.profile }}
+          name: "${{ steps.device-config.outputs.major_version }} ${{ matrix.device }}"
+          body: |
+            ### Build Information
+            **Build ID**: `${{ github.run_id }}`
+            **Build Date**: `${{ steps.get-date.outputs.date }}`
+            
+            ### Firmware Information
+            **Profile**: `${{ steps.device-config.outputs.profile }}`
+            **Architecture**: `${{ steps.device-config.outputs.arch }}`
+            **Target**: `${{ steps.device-config.outputs.targets }}`
+            **SDK Version**: `${{ steps.device-config.outputs.version }}`
+            **IP Address**: `${{ steps.device-config.outputs.ip_address || '192.168.1.1' }}`
+          draft: false
+          prerelease: false
