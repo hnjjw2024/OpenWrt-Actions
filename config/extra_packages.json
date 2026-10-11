@@ -1,5 +1,29 @@
 [
   {
+    "url": "https://github.com/JaneCCP/luci-app-adguardhome",
+    "branch": "master",
+    "packages": [
+      "luci-app-adguardhome"
+    ]
+  },
+  {
+    "url": "https://github.com/EasyTier/luci-app-easytier",
+    "branch": "main",
+    "packages": [
+      "easytier", 
+      "luci-app-easytier"
+    ],
+    "scripts": "luci-app-easytier.sh"
+  },
+  {
+    "url": "https://github.com/sbwml/luci-app-mosdns",
+    "branch": "v5",
+    "packages": [
+      "luci-app-mosdns"
+    ],
+    "scripts": "luci-app-mosdns.sh"
+  },
+  {
     "url": "https://gitee.com/dffxy/luci-app-mesh.git",
     "branch": "main",
     "scripts": "",
