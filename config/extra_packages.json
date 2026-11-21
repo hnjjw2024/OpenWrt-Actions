@@ -25,7 +25,7 @@
   },
   {
     "url": "https://gitee.com/dffxy/luci-app-mesh.git",
-    "branch": "main",
+    "branch": "master",
     "scripts": "",
     "packages": [
       "luci-app-mesh"
