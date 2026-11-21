@@ -18,6 +18,8 @@ on:
         type: string
         description: "后台IP地址(可选)"
         required: false
+  schedule:
+    - cron: '0 0 * * 5'
 
 jobs:
   generate-matrix:
