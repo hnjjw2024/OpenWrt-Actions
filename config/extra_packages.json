@@ -22,13 +22,5 @@
       "luci-app-mosdns"
     ],
     "scripts": "luci-app-mosdns.sh"
-  },
-  {
-    "url": "https://gitee.com/dffxy/luci-app-mesh.git",
-    "branch": "master",
-    "scripts": "",
-    "packages": [
-      "luci-app-mesh"
-    ]
   }
 ]
