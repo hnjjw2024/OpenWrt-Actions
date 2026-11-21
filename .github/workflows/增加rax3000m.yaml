@@ -1,4 +1,4 @@
-name: 55and25 Build OpenWrt Image
+name: 增加rax3000m  55and25 Build OpenWrt Image
 
 on:
   workflow_dispatch:
@@ -10,6 +10,7 @@ on:
         default: all
         options:
           - all
+          - cmcc_rax3000m
           - cmcc_rax3000me
           - qihoo_360t7
           - x86-64
