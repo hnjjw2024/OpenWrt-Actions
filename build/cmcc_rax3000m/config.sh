@@ -1,7 +1,7 @@
 # 主机名，可自定义
-export hostname="RAX3000Me"
+export hostname="RAX3000M"
 # 设备型号，必须与官方设备型号一致
-export profile="cmcc_rax3000me"
+export profile="cmcc_rax3000m"
 # 设备架构，必须与官方设备架构一致
 export targets="mediatek/filogic"
 # 设备CPU架构（用于下载预编译包）
